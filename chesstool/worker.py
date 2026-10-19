@@ -110,9 +110,84 @@ class Worker(threading.Thread):
                 self.status("позиция не распознана, пробую ещё...")
                 return
             b.turn = chess.WHITE
+            # rescan recovery: if the new position differs from our tracked
+            # board by exactly ONE enemy move — that move just happened!
+            # (incremental matching can miss it: highlight shifts, timing).
+            # Treat it as a detected enemy move and analyse immediately.
+            recovered = None
+            try:
+                if self.board is not None and self.board.piece_map():
+                    enemy_turn = not self.our_color
+                    for mv in self.board.legal_moves:
+                        if chess.square_name(mv.from_square) == "" :
+                            continue
+                        piece = self.board.piece_at(mv.from_square)
+                        if piece is None or piece.color != enemy_turn:
+                            continue
+                        probe = self.board.copy(stack=False)
+                        probe.push(mv)
+                        if {chess.square_name(sq): pc.symbol()
+                                for sq, pc in probe.piece_map().items()} == \
+                                st.by_name(self.detector.flip):
+                            recovered = mv
+                            break
+            except Exception:
+                pass
             self.board = b
             self.prev_state = st
             self.full_rescan_needed = False
+            if recovered is not None:
+                self.log(f"ход противника восстановлен из рескана: "
+                         f"{recovered.uci()}")
+                self.status("думаю...")
+                t0 = time.time()
+                lines = self.engine.analyse(
+                    self.board, profile_for(int(self.cfg.get("elo", 1700)))["movetime"])
+                engine_ms = int((time.time() - t0) * 1000)
+                if lines:
+                    best_cp = max(l[3] for l in lines)
+                    show = []
+                    for mv, sc, rank, cp in lines:
+                        pct = 100.0 * math.exp(-(best_cp - cp) / 80.0)
+                        pct = max(0.0, min(100.0, pct))
+                        show.append({"uci": mv, "score": sc, "rank": rank,
+                                     "pct": pct})
+                    prof = profile_for(int(self.cfg.get("elo", 1700)))
+                    if prof["weights"] and len(show) > 1:
+                        ws = prof["weights"][:len(show)]
+                        ssum = sum(ws)
+                        rr = random.random() * ssum
+                        acc = 0
+                        chosen = show[0]
+                        for i, wv in enumerate(ws):
+                            acc += wv
+                            if rr <= acc:
+                                chosen = show[i]
+                                break
+                        chosen["star"] = True
+                    if not self.cfg.get("show_top3", True):
+                        show = show[:1]
+                    if self.cfg.get("human_delay_on", True):
+                        dmin = int(self.cfg.get("human_delay_min_ms", 300)) / 1000.0
+                        dmax = int(self.cfg.get("human_delay_max_ms", 1400)) / 1000.0
+                        delay = random.uniform(dmin, max(dmax, dmin + 0.01))
+                    else:
+                        delay = 0.0
+                    time.sleep(delay)
+                    self.ui.put(("region", dict(self.detector.region)))
+                    self.moves({
+                        "moves": show,
+                        "flip": self.detector.flip,
+                        "cell": self.detector.cell,
+                        "fen": self.board.fen(),
+                    })
+                    self.log("ходы: " + "  ".join(
+                        f"{'★' if m.get('star') else '⌗' + str(m['rank'])} "
+                        f"{m['uci'][:2]}→{m['uci'][2:4]} {m['score']} "
+                        f"{m['pct']:.0f}%" for m in show) +
+                        f"  [движок {engine_ms}мс, показ +{int(delay * 1000)}мс]")
+                    self.status("ход показан — сходи и жди ответа")
+                    return
             self.status(f"позиция захвачена, играем "
                         f"{'чёрными' if self.detector.flip else 'белыми'} — "
                         f"слежу за доской")
@@ -146,6 +221,126 @@ class Worker(threading.Thread):
                 break
 
         if candidate is None:
+            # diagnostic: dump the mismatch to understand live failures
+            best_diff = None
+            for turn_color in (chess.WHITE, chess.BLACK):
+                b2 = base.copy(stack=False)
+                b2.turn = turn_color
+                for mv in b2.legal_moves:
+                    b2.push(mv)
+                    m2 = {chess.square_name(sq): pc.symbol()
+                          for sq, pc in b2.piece_map().items()}
+                    if m2.keys() != piece_map_new.keys():
+                        b2.pop()
+                        continue
+                    diff = {k: (m2[k], piece_map_new[k])
+                            for k in m2 if m2[k] != piece_map_new.get(k)}
+                    if diff and (best_diff is None or len(diff) < len(best_diff[2])):
+                        best_diff = (turn_color, mv.uci(), diff)
+                    b2.pop()
+            if best_diff:
+                self.log(f"матчинг: нет хода; ближайший {best_diff[1]} "
+                         f"расходится в {best_diff[2]}")
+            # fast bots reply within one poll tick: both our move and the
+            # enemy reply land in the same frame. Match the PAIR of moves.
+            pair = None
+            for our_m_color in (chess.WHITE, chess.BLACK):
+                b1 = base.copy(stack=False)
+                b1.turn = our_m_color
+                for mv1 in b1.legal_moves:
+                    b1.push(mv1)
+                    b2 = b1.copy(stack=False)
+                    b2.turn = not our_m_color
+                    for mv2 in b2.legal_moves:
+                        b2.push(mv2)
+                        if {chess.square_name(sq): pc.symbol()
+                                for sq, pc in b2.piece_map().items()} == piece_map_new:
+                            pair = (our_m_color, mv1, mv2)
+                            b2.pop()
+                            break
+                        b2.pop()
+                    if pair:
+                        b1.pop()
+                        break
+                    b1.pop()
+                if pair:
+                    break
+            if pair is not None:
+                our_m_color, mv1, mv2 = pair
+                if our_m_color == self.our_color:
+                    # our move + enemy reply: process the enemy move fully
+                    san1 = mv1.uci()
+                    try:
+                        b_san = base.copy(stack=False)
+                        b_san.turn = our_m_color
+                        san1 = b_san.san(mv1)
+                    except Exception:
+                        pass
+                    san2 = mv2.uci()
+                    try:
+                        b_san2 = base.copy(stack=False)
+                        b_san2.turn = our_m_color
+                        b_san2.push(mv1)
+                        san2 = b_san2.san(mv2)
+                    except Exception:
+                        pass
+                    self.board.push(mv1)
+                    self.board.push(mv2)
+                    self.prev_state = st
+                    self.log(f"я: {san1}, противник: {san2}")
+                    self.status("думаю...")
+                    t0 = time.time()
+                    lines = self.engine.analyse(
+                        self.board,
+                        profile_for(int(self.cfg.get("elo", 1700)))["movetime"])
+                    engine_ms = int((time.time() - t0) * 1000)
+                    if not lines:
+                        self.status("движок не дал ход")
+                        return
+                    best_cp = max(l[3] for l in lines)
+                    show = []
+                    for mv, sc, rank, cp in lines:
+                        pct = 100.0 * math.exp(-(best_cp - cp) / 80.0)
+                        pct = max(0.0, min(100.0, pct))
+                        show.append({"uci": mv, "score": sc, "rank": rank,
+                                     "pct": pct})
+                    prof = profile_for(int(self.cfg.get("elo", 1700)))
+                    if prof["weights"] and len(show) > 1:
+                        ws = prof["weights"][:len(show)]
+                        ssum = sum(ws)
+                        rr = random.random() * ssum
+                        acc = 0
+                        chosen = show[0]
+                        for i, wv in enumerate(ws):
+                            acc += wv
+                            if rr <= acc:
+                                chosen = show[i]
+                                break
+                        chosen["star"] = True
+                    if not self.cfg.get("show_top3", True):
+                        show = show[:1]
+                    if self.cfg.get("human_delay_on", True):
+                        dmin = int(self.cfg.get("human_delay_min_ms", 300)) / 1000.0
+                        dmax = int(self.cfg.get("human_delay_max_ms", 1400)) / 1000.0
+                        delay = random.uniform(dmin, max(dmax, dmin + 0.01))
+                    else:
+                        delay = 0.0
+                    time.sleep(delay)
+                    self.ui.put(("region", dict(self.detector.region)))
+                    self.moves({
+                        "moves": show,
+                        "flip": self.detector.flip,
+                        "cell": self.detector.cell,
+                        "fen": self.board.fen(),
+                    })
+                    self.log("ходы: " + "  ".join(
+                        f"{'★' if m.get('star') else '⌗' + str(m['rank'])} "
+                        f"{m['uci'][:2]}→{m['uci'][2:4]} {m['score']} "
+                        f"{m['pct']:.0f}%" for m in show) +
+                        f"  [движок {engine_ms}мс, показ +{int(delay * 1000)}мс]")
+                    self.status("ход показан — сходи и жди ответа")
+                    return
+            # real glitch — rescan
             self.full_rescan_needed = True
             return
 
