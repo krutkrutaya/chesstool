@@ -242,6 +242,9 @@ THEMES = [
     ((238, 238, 238), (118, 118, 118)),   # grey / newspaper
     ((233, 231, 200), (120, 128,  89)),   # muted green-ish
     ((247, 245, 209), ( 89, 122,  71)),   # walnut-ish
+    ((208, 236, 235), ( 82, 149, 115)),   # mint/teal (user's theme)
+    ((222, 227, 230), ( 47,  61,  85)),   # dark navy-ish
+    ((235, 236, 209), (110, 139,  87)),   # green v2
 ]
 TOL = 26
 
@@ -418,10 +421,158 @@ class BoardDetector:
 
     def _post_region(self):
         r = self.region
-        self.cell = min(r["width"], r["height"]) // 8
-        # NOTE: board orientation (flip) is NOT determined by corner color —
-        # a1 and h8 are both dark. Flip is detected from piece placement
-        # (white pawns) after the first full scan.
+        orig = dict(r)
+        # auto-grow: if the checkerboard mask touches a region edge, the user
+        # frame clipped the board — expand (screen-limited), up to 3 rounds
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
+        grow = {"top": 0, "left": 0, "right": 0, "bottom": 0}
+        for _ in range(3):
+            with mss.mss() as sct:
+                img = np.asarray(sct.grab({"left": r["left"], "top": r["top"],
+                                           "width": r["width"], "height": r["height"]}),
+                                 dtype=np.uint8)[:, :, :3]
+            m = self._board_mask(img)
+            t_t = m[0:3].mean() > 0.5
+            t_b = m[-3:].mean() > 0.5
+            t_l = m[:, 0:3].mean() > 0.5
+            t_r = m[:, -3:].mean() > 0.5
+            if not (t_t or t_b or t_l or t_r):
+                break
+            if t_t:
+                grow["top"] += 80
+            if t_b:
+                grow["bottom"] += 80
+            if t_l:
+                grow["left"] += 80
+            if t_r:
+                grow["right"] += 80
+            r["left"] = max(0, orig["left"] - grow["left"])
+            r["top"] = max(0, orig["top"] - grow["top"])
+            r["width"] = min(screen_w - r["left"],
+                             orig["width"] + grow["left"] + grow["right"])
+            r["height"] = min(screen_h - r["top"],
+                              orig["height"] + grow["top"] + grow["bottom"])
+        with mss.mss() as sct:
+            img = np.asarray(sct.grab({"left": r["left"], "top": r["top"],
+                                       "width": r["width"], "height": r["height"]}),
+                             dtype=np.uint8)[:, :, :3]
+        # refine grid: subpixel alignment from light/dark transitions
+        rf = self._refine_grid(img)
+        if rf is not None:
+            gx, gy, gside = rf
+            r["left"] += gx
+            r["top"] += gy
+            r["width"] = gside
+            r["height"] = gside
+        # fractional cell size: browser zoom gives non-integer boards
+        self.cw = r["width"] / 8.0
+        self.ch = r["height"] / 8.0
+        self.cell = int(round(r["width"] / 8.0))
+        # NOTE: flip is detected from piece placement after the first full scan.
+
+    def _refine_grid(self, img: np.ndarray):
+        """Subpixel board alignment from light<->dark transitions.
+        Returns (left, top, side) inside img, or None."""
+        sm = img.astype(np.int16)
+        light = np.zeros(img.shape[:2], dtype=bool)
+        dark = np.zeros(img.shape[:2], dtype=bool)
+        for lt, dk in THEMES:
+            light |= (np.abs(sm - np.int16(lt)).max(axis=2) <= TOL)
+            dark |= (np.abs(sm - np.int16(dk)).max(axis=2) <= TOL)
+        both = light | dark
+        h, w = img.shape[:2]
+        est_c = w / 8.0
+
+        def transitions_line(is_row: bool, idx: int):
+            if is_row:
+                a = light[idx]; b = dark[idx]
+            else:
+                a = light[:, idx]; b = dark[:, idx]
+            lab = np.zeros(a.shape[0], dtype=np.int8)
+            lab[a] = 1
+            lab[b] = 2
+            ok = np.zeros(a.shape[0], dtype=bool)
+            ok[a | b] = True
+            xs = []
+            for i in range(1, len(lab)):
+                if ok[i] and ok[i - 1] and lab[i] != lab[i - 1]:
+                    xs.append(i)
+            return xs
+
+        def fit_axis(is_row: bool):
+            spans = []
+            for frac_y in (0.22, 0.28, 0.34, 0.46, 0.52, 0.58, 0.64, 0.72, 0.78, 0.84):
+                idx = int(frac_y * (h if is_row else w))
+                idx = min(idx, (h if is_row else w) - 1)
+                xs = transitions_line(is_row, idx)
+                if len(xs) == 7:
+                    diffs = [xs[i + 1] - xs[i] for i in range(6)]
+                    if all(0.7 * est_c <= d <= 1.3 * est_c for d in diffs):
+                        spans.append(xs)
+            if not spans:
+                return None
+            # aggregate: first/last transition positions
+            firsts = [s[0] for s in spans]
+            lasts = [s[-1] for s in spans]
+            first = float(np.median(firsts))
+            last = float(np.median(lasts))
+            cw = (last - first) / 6.0
+            left = first - cw
+            side = 8.0 * cw
+            return left, side
+
+        fx = fit_axis(True)   # rows -> vertical transitions give x-grid
+        fy = fit_axis(False)  # columns -> horizontal transitions give y-grid
+        if fx is None or fy is None:
+            return None
+        left, side_x = fx
+        top, side_y = fy
+        side = (side_x + side_y) / 2.0
+        if side < 300 or side > max(h, w) + 8:
+            return None
+        left = int(round(max(0, min(left, w - side))))
+        top = int(round(max(0, min(top, h - side))))
+        return left, top, int(round(side))
+
+    def _snap_to_checker(self, img: np.ndarray):
+        """Trim outer frame/rails around the actual 8x8 checkerboard.
+        Returns (dx, dy, w, h) of the board inside the image."""
+        m = self._board_mask(img)
+        h, w = m.shape
+        strip = 4
+        def dens_rows(y0, y1):
+            return m[y0:y1].mean() if y1 > y0 else 0.0
+        def dens_cols(x0, x1):
+            return m[:, x0:x1].mean() if x1 > x0 else 0.0
+        top = 0
+        while top + strip <= h // 2 and dens_rows(top, top + strip) < 0.55:
+            top += strip
+        bottom = h
+        while bottom - strip >= h // 2 and dens_rows(bottom - strip, bottom) < 0.55:
+            bottom -= strip
+        left = 0
+        while left + strip <= w // 2 and dens_cols(left, left + strip) < 0.55:
+            left += strip
+        right = w
+        while right - strip >= w // 2 and dens_cols(right - strip, right) < 0.55:
+            right -= strip
+        # expand back by one strip to not eat the outer row/col of cells
+        left = max(0, left - strip)
+        top = max(0, top - strip)
+        right = min(w, right + strip)
+        bottom = min(h, bottom + strip)
+        if right - left < 300 or bottom - top < 300:
+            return 0, 0, w, h
+        return left, top, right - left, bottom - top
+
+    def _board_mask(self, img: np.ndarray) -> np.ndarray:
+        sm = img.astype(np.int16)
+        m = np.zeros(img.shape[:2], dtype=bool)
+        for lt, dk in THEMES:
+            m |= (np.abs(sm - np.int16(lt)).max(axis=2) <= TOL)
+            m |= (np.abs(sm - np.int16(dk)).max(axis=2) <= TOL)
+        return m
 
     # ------------------------------------------------------------------
     def capture(self) -> np.ndarray:
@@ -443,13 +594,15 @@ class BoardDetector:
         ps = max(3, c // 14)           # patch size
         for r in range(0, 8, 2):
             for cc in range(0, 8, 2):
-                y = r * c
-                x = cc * c
+                y = int(r * self.ch)
+                x = int(cc * self.cw)
+                cw = int((cc + 1) * self.cw) - x
+                chh = int((r + 1) * self.ch) - y
                 corners = [
                     (y + pad, x + pad),
-                    (y + pad, x + c - pad - ps),
-                    (y + c - pad - ps, x + pad),
-                    (y + c - pad - ps, x + c - pad - ps),
+                    (y + pad, x + cw - pad - ps),
+                    (y + chh - pad - ps, x + pad),
+                    (y + chh - pad - ps, x + cw - pad - ps),
                 ]
                 cell_ok = False
                 for (yy, xx) in corners:
@@ -493,18 +646,41 @@ class BoardDetector:
         if frac < 0.10:
             return None, None
         # template match over eroded piece masks (background not compared)
+        # but split candidates by piece colour first:
+        # piece pixels = far from bg; their brightness decides white vs black
+        piece_px = dmax > 22
+        if piece_px.sum() < 4:
+            return None, None
+        brightness = f[:, :, :3][piece_px].mean()
+        # white pieces are bright (>=140), black pieces dark (<=110)
+        if brightness >= 125.0:
+            candidates = "PNBRQK"
+        elif brightness <= 110.0:
+            candidates = "pnbrqk"
+        else:
+            candidates = "PNBRQKpnbrqk"  # ambiguous (highlighted cells)
         best_ch, best_mse, second = None, 1e9, 1e9
         for ch in self.templates:
+            if ch not in candidates:
+                continue
             tpl, mask = self._tpl(ch, size)
             if mask.sum() < 1:
                 continue
             diff = (f[:, :, :3] - tpl) * mask[:, :, None]
             mse = float((diff * diff).sum() / (mask.sum() * 3.0))
+            # outside penalty: non-background pixels sticking out of the
+            # template mask mean the piece is bigger than this template
+            outside = (mask < 0.5) & piece_px
+            if outside.sum() > 2:
+                out_dev = ((f[:, :, :3] - bg) ** 2).sum(axis=2)[outside].mean() / 3.0
+                mse += 0.05 * out_dev
             if mse < best_mse:
                 second = best_mse
                 best_ch, best_mse = ch, mse
             elif mse < second:
                 second = mse
+        if best_ch is None:
+            return "?", None
         if best_mse < 900.0:
             return best_ch, best_ch
         if best_mse < 2800.0 and (second - best_mse) > 25.0:
@@ -529,19 +705,23 @@ class BoardDetector:
     def recognize(self, img: np.ndarray, prev: BoardState, full: bool = False):
         """Returns (new BoardState, set_of_changed (col,row)). Incremental when possible."""
         st = BoardState()
-        c = self.cell
         # square size actually used for template matching
-        tsize = c if c <= 96 else 96
+        tsize = self.cell if self.cell <= 96 else 96
         changed = set()
         for row in range(8):
             for col in range(8):
-                y0, x0 = row * c, col * c
-                cell = img[y0:y0 + c, x0:x0 + c]
+                y0 = int(row * self.ch)
+                y1 = int((row + 1) * self.ch)
+                x0 = int(col * self.cw)
+                x1 = int((col + 1) * self.cw)
+                cell = img[y0:y1, x0:x1]
                 if cell.size == 0:
                     continue
+                cw = x1 - x0
+                chh = y1 - y0
                 if not full:
-                    m = c // 8
-                    core = cell[m:c - m, m:c - m]
+                    m = max(3, min(cw, chh) // 8)
+                    core = cell[m:chh - m, m:cw - m]
                     fp = self._fingerprint(core)
                     old = prev.sign.get((col, row))
                     if old is not None and abs(fp[0] - old[0]) < 4.0 and abs(fp[1] - old[1]) < 5.0:
@@ -550,7 +730,7 @@ class BoardDetector:
                         continue
                 changed.add((col, row))
                 bg = self._cell_bg(cell)
-                if c != tsize:
+                if (cw, chh) != (tsize, tsize):
                     ci = Image.fromarray(cell).resize((tsize, tsize), Image.BILINEAR)
                     cell = np.asarray(ci, dtype=np.uint8)
                 piece, guess = self._classify_cell(cell, bg, tsize)
@@ -559,8 +739,8 @@ class BoardDetector:
                     # blocking board assembly with a fatal '?'
                     piece = guess
                 st.squares[(col, row)] = piece
-                m = c // 8
-                core = img[y0 + m:y0 + c - m, x0 + m:x0 + c - m]
+                m = max(3, min(cw, chh) // 8)
+                core = img[y0 + m:y1 - m, x0 + m:x1 - m]
                 st.sign[(col, row)] = self._fingerprint(core)
         st.ok = True
         return st, changed

@@ -80,6 +80,7 @@ def test_recognition():
     det = M.BoardDetector()
     det.region = {"left": 0, "top": 0, "width": 640, "height": 640}
     det.cell = 80
+    det.cw = det.ch = 80.0
     det.flip = False
     det._post_region = lambda: None  # skip screen grab
 
