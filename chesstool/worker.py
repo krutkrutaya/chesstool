@@ -52,23 +52,23 @@ class Worker(threading.Thread):
             with open(os.path.join(dbg, "squares.txt"), "w",
                       encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n\n" + self.board.fen() + "\n")
-            self.log(f"debug сохранён: {dbg}\\board.png + squares.txt")
+            self.log(f"debug saved: {dbg}\\board.png + squares.txt")
         except Exception as e:
-            self.log("debug ошибка: " + str(e))
+            self.log("debug error: " + str(e))
 
     # -- loop ---------------------------------------------------------------
     def run(self):
-        self.status("поиск доски...")
+        self.status("looking for the board...")
         saved = self.cfg.get("region")
         if saved and all(k in saved for k in ("left", "top", "width", "height")):
             try:
                 self.detector.set_region(saved["left"], saved["top"],
                                          saved["width"], saved["height"])
-                self.status("использую сохранённую область доски")
+                self.status("using saved board region")
             except Exception:
                 self.detector.region = None
         if self.detector.region is None and not self.detector.auto_detect():
-            self.status("доска не найдена — нажми F2 и выдели рамкой")
+            self.status("board not found — press F2 and frame it")
             while not self.stop_event.is_set() and self.detector.region is None:
                 time.sleep(0.3)
             if self.stop_event.is_set():
@@ -76,22 +76,22 @@ class Worker(threading.Thread):
         r = self.detector.region
         self.our_color = chess.BLACK if self.detector.flip else chess.WHITE
         self.ui.put(("region", dict(r)))
-        self.status(f"доска: {r['width']}x{r['height']} @ ({r['left']},{r['top']})")
+        self.status(f"board: {r['width']}x{r['height']} @ ({r['left']},{r['top']})")
         try:
             self.engine = EngineWrapper(engine_path())
         except Exception as e:
-            self.status("ошибка движка: " + str(e))
+            self.status("engine error: " + str(e))
             return
         prof = self.engine.set_profile(int(self.cfg.get("elo", 1700)))
-        self.log(f"движок: Stockfish 19, эло {self.cfg.get('elo')}, "
-                 f"skill {prof['skill']}, movetime {prof['movetime']}мс")
+        self.log(f"engine: Stockfish 19, elo {self.cfg.get('elo')}, "
+                 f"skill {prof['skill']}, movetime {prof['movetime']}ms")
 
         poll = int(self.cfg.get("poll_ms", 120)) / 1000.0
         while not self.stop_event.is_set():
             try:
                 self._step()
             except Exception as e:
-                self.status("ошибка: " + str(e))
+                self.status("error: " + str(e))
                 time.sleep(1.0)
             time.sleep(poll)
 
@@ -99,7 +99,7 @@ class Worker(threading.Thread):
     def _step(self):
         img = self.detector.capture()
         if not self.detector.board_looks_valid(img):
-            self.status("доска не видна (перекрыта?)")
+            self.status("board not visible (covered?)")
             return
         if self.full_rescan_needed:
             st, _ = self.detector.recognize(img, BoardState(), full=True)
@@ -107,7 +107,7 @@ class Worker(threading.Thread):
             self.our_color = chess.BLACK if self.detector.flip else chess.WHITE
             b = self.detector.build_board(st, our_turn=True)
             if b is None:
-                self.status("позиция не распознана, пробую ещё...")
+                self.status("position not recognized, retrying...")
                 return
             b.turn = chess.WHITE
             # rescan recovery: if the new position differs from our tracked
@@ -137,9 +137,9 @@ class Worker(threading.Thread):
             self.prev_state = st
             self.full_rescan_needed = False
             if recovered is not None:
-                self.log(f"ход противника восстановлен из рескана: "
+                self.log(f"enemy move recovered from rescan: "
                          f"{recovered.uci()}")
-                self.status("думаю...")
+                self.status("thinking...")
                 t0 = time.time()
                 lines = self.engine.analyse(
                     self.board, profile_for(int(self.cfg.get("elo", 1700)))["movetime"])
@@ -181,16 +181,16 @@ class Worker(threading.Thread):
                         "cell": self.detector.cell,
                         "fen": self.board.fen(),
                     })
-                    self.log("ходы: " + "  ".join(
+                    self.log("moves: " + "  ".join(
                         f"{'★' if m.get('star') else '⌗' + str(m['rank'])} "
                         f"{m['uci'][:2]}→{m['uci'][2:4]} {m['score']} "
                         f"{m['pct']:.0f}%" for m in show) +
-                        f"  [движок {engine_ms}мс, показ +{int(delay * 1000)}мс]")
-                    self.status("ход показан — сходи и жди ответа")
+                        f"  [engine {engine_ms}ms, shown +{int(delay * 1000)}ms]")
+                    self.status("move shown — play it and wait for the reply")
                     return
-            self.status(f"позиция захвачена, играем "
-                        f"{'чёрными' if self.detector.flip else 'белыми'} — "
-                        f"слежу за доской")
+            self.status(f"position captured, playing as "
+                        f"{'black' if self.detector.flip else 'white'} — "
+                        f"tracking the board")
             self.log(f"fen: {self.board.fen()}")
             self.engine.warmup(self.board)
             return
@@ -239,8 +239,8 @@ class Worker(threading.Thread):
                         best_diff = (turn_color, mv.uci(), diff)
                     b2.pop()
             if best_diff:
-                self.log(f"матчинг: нет хода; ближайший {best_diff[1]} "
-                         f"расходится в {best_diff[2]}")
+                self.log(f"matching: no move found; closest {best_diff[1]} "
+                         f"differs in {best_diff[2]}")
             # fast bots reply within one poll tick: both our move and the
             # enemy reply land in the same frame. Match the PAIR of moves.
             pair = None
@@ -287,15 +287,15 @@ class Worker(threading.Thread):
                     self.board.push(mv1)
                     self.board.push(mv2)
                     self.prev_state = st
-                    self.log(f"я: {san1}, противник: {san2}")
-                    self.status("думаю...")
+                    self.log(f"me: {san1}, enemy: {san2}")
+                    self.status("thinking...")
                     t0 = time.time()
                     lines = self.engine.analyse(
                         self.board,
                         profile_for(int(self.cfg.get("elo", 1700)))["movetime"])
                     engine_ms = int((time.time() - t0) * 1000)
                     if not lines:
-                        self.status("движок не дал ход")
+                        self.status("engine gave no move")
                         return
                     best_cp = max(l[3] for l in lines)
                     show = []
@@ -333,18 +333,23 @@ class Worker(threading.Thread):
                         "cell": self.detector.cell,
                         "fen": self.board.fen(),
                     })
-                    self.log("ходы: " + "  ".join(
+                    self.log("moves: " + "  ".join(
                         f"{'★' if m.get('star') else '⌗' + str(m['rank'])} "
                         f"{m['uci'][:2]}→{m['uci'][2:4]} {m['score']} "
                         f"{m['pct']:.0f}%" for m in show) +
-                        f"  [движок {engine_ms}мс, показ +{int(delay * 1000)}мс]")
-                    self.status("ход показан — сходи и жди ответа")
+                        f"  [engine {engine_ms}ms, shown +{int(delay * 1000)}ms]")
+                    self.status("move shown — play it and wait for the reply")
                     return
             # real glitch — rescan
             self.full_rescan_needed = True
             return
 
         mover_is_opponent = (mover_color != self.our_color)
+        # bulletproof: the mover's color is the COLOR OF THE PIECE THAT
+        # MOVED (visible on the board), not the search branch that found it
+        moved_piece = base.piece_at(candidate.from_square)
+        if moved_piece is not None:
+            mover_is_opponent = (moved_piece.color != self.our_color)
         san = candidate.uci()
         try:
             b_san = base.copy(stack=False)
@@ -356,15 +361,15 @@ class Worker(threading.Thread):
         if mover_is_opponent:
             self.board.push(candidate)
             self.prev_state = st
-            self.log(f"противник: {san}")
-            self.status("думаю...")
+            self.log(f"enemy: {san}")
+            self.status("thinking...")
             t0 = time.time()
             lines = self.engine.analyse(
                 self.board,
                 profile_for(int(self.cfg.get("elo", 1700)))["movetime"])
             engine_ms = int((time.time() - t0) * 1000)
             if not lines:
-                self.status("движок не дал ход")
+                self.status("engine gave no move")
                 return
             best_cp = max(l[3] for l in lines)
             show = []
@@ -401,16 +406,16 @@ class Worker(threading.Thread):
                 "cell": self.detector.cell,
                 "fen": self.board.fen(),
             })
-            self.log("ходы: " + "  ".join(
+            self.log("moves: " + "  ".join(
                 f"{'★' if m.get('star') else '⌗' + str(m['rank'])} "
                 f"{m['uci'][:2]}→{m['uci'][2:4]} {m['score']} {m['pct']:.0f}%"
                 for m in show) +
-                f"  [движок {engine_ms}мс, показ +{int(delay * 1000)}мс]")
-            self.status("ход показан — сходи и жди ответа")
+                f"  [engine {engine_ms}ms, shown +{int(delay * 1000)}ms]")
+            self.status("move shown — play it and wait for the reply")
         else:
             # we moved: clear overlay, warm the TT for the reply to come
             self.board.push(candidate)
             self.prev_state = st
             self.ui.put(("clear", None))
             self.engine.warmup(self.board)
-            self.status("твой ход принят, жду противника...")
+            self.status("your move accepted, waiting for the opponent...")

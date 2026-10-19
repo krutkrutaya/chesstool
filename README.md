@@ -1,80 +1,85 @@
 # ChessTool
 
-Шахматный ассистент для chess.com: читает доску прямо с экрана и подсказывает
-ходы в стиле выбранного Elo (600–2500). Один exe, мгновенные ответы,
-невидимый оверлей со стрелками.
+Chess assistant for chess.com: reads the board straight from the screen and
+suggests moves in the style of the selected Elo (600–2500). Single exe,
+instant replies, invisible overlay with arrows.
 
-## Возможности
+## Features
 
-- **Авто-детект доски** + авто-замер её цветов (любые темы chess.com)
-- Ручная калибровка рамкой (F2), авто-расширение и субпиксельное
-  выравнивание сетки (дробные клетки при зуме браузера)
-- Распознавание фигур по шаблонам (тема neo), инкрементально (~10 мс на ход)
-- **Stockfish 19 с Elo-капом** + TT-прогрев: ответ после хода противника
-  за десятки миллисекунд
-- 1–3 варианта: стрелка откуда → куда, оценка, процент качества
-  (`e5 +0.25 100%`), ★ на рекомендованном (низкие эло)
-- Human-delay 0.3–1.4с: время реакции статистически живое
-- Оверлей: click-through, невидим для OBS/скриншотов (WDA_EXCLUDEFROMCAPTURE)
-- Игра белыми и чёрными, матчи, взятия, рокировки — всё отслеживается
-- Тулка **не кликает за тебя** — ходишь сам
+- **Auto board detection** + automatic color measurement (any chess.com theme)
+- Manual frame calibration (F2), region auto-grow and subpixel grid
+  alignment (fractional cells under browser zoom)
+- Piece recognition via templates (neo set), incremental (~10 ms per move)
+- **Stockfish 19 with an Elo cap** + TT warmup: replies land in tens of ms
+- 1–3 options: arrow from → to, score, quality percent
+  (`e5 +0.25 100%`), ★ on the recommended pick (low Elo)
+- Human-delay 0.3–1.4s: reaction time stays statistically human
+- Robust enemy-move tracking: two-step pair matching (instant bot replies),
+  rescan recovery (missed move reconstructed from the tracked board)
+- Overlay: click-through, invisible to OBS/screenshots
+  (WDA_EXCLUDEFROMCAPTURE), mover color determined by the piece itself
+- Playing white or black, mates, captures, castling — all tracked
+- The tool **never clicks for you** — you move yourself
 
-## Хоткеи
+## Hotkeys
 
-| Клавиша | Действие |
-|---------|----------|
-| F1 | старт / стоп анализа |
-| F2 | калибровка доски рамкой |
-| F3 | скрыть / показать оверлей |
-| F4 | 1 / 3 варианта хода |
-| F5 | debug-дамп (скрин + распознанная позиция) |
+| Key | Action |
+|-----|--------|
+| F1 | start / stop analysis |
+| F2 | calibrate the board with a frame |
+| F3 | hide / show overlay |
+| F4 | 1 / 3 move options |
+| F5 | debug dump (screenshot + recognized position) |
 
-## Запуск (dev)
+## Run (dev)
 
 ```
 pip install -r requirements.txt
 python main.py
 ```
 
-Нужен `engines/stockfish.exe` (Stockfish 19) — уже в папке.
+Requires `engines/stockfish.exe` (Stockfish 19) — already in the folder.
 
-## Сборка exe
+## Build exe
 
 ```
 build.bat
 ```
 
-## Тесты (обязательный прогон перед изменениями)
+## Tests (mandatory before changes)
 
 ```
-run_tests.bat          # все сьюты
-python test_units.py   # профили, движок, распознавание, авто-темы
-python test_region.py  # авто-grow региона, субпиксельная сетка
-python test_worker.py  # интеграция с живым Stockfish
-python test_game.py    # мок-партии: Опера Морфи (мат), Найдорф чёрными,
-                      # перекрытие доски, шум
-python test_overlay.py # дымовой тест оверлея (пиксели на экране)
+run_tests.bat          # all suites
+python test_units.py   # profiles, engine, recognition, auto themes
+python test_region.py  # region auto-grow, subpixel grid
+python test_worker.py  # integration with live Stockfish
+python test_game.py    # mocked games: Morphy's Opera (mate), Najdorf as
+                      # black, occlusion recovery, noise tolerance
+python test_pair.py    # instant enemy replies in a single poll tick
+python test_rescan.py  # missed enemy move recovered from rescan
+python test_capture.py # our queen move never misdetected as enemy
+python test_overlay.py # overlay smoke test (pixels on the real screen)
 ```
 
-## Структура
+## Structure
 
 ```
-main.py                 — вход
+main.py                 — entry point
 chesstool/
-  config.py             — пути, конфиг
+  config.py             — paths, config
   win32.py              — ctypes: click-through, DPI-aware
-  engine.py             — Stockfish UCI + эло-профили + прогрев TT
-  detector.py           — детект доски, темы, шаблонный матчинг фигур
-  overlay.py            — прозрачный оверлей + калибровщик
-  worker.py             — цикл: захват → ходы → движок → очередь GUI
-  gui.py                — панель: свитчи, эло, слайдеры, лог
+  engine.py             — Stockfish UCI + elo profiles + TT warmup
+  detector.py           — board detection, themes, template matching
+  overlay.py            — transparent overlay + calibrator
+  worker.py             — loop: capture -> moves -> engine -> GUI queue
+  gui.py                — panel: switches, elo, sliders, log
 engines/stockfish.exe   — Stockfish 19
-templates/*.png         — 12 шаблонов фигур (neo)
+templates/*.png         — 12 piece templates (neo)
 ```
 
-## Анти-детект дизайн
+## Anti-detection design
 
-- Никаких кликов — только подсветка
-- Elo-кап: ходы соответствуют заявленному уровню
-- Случайная задержка показа + лёгкая рандомизация на низких эло
-- Оверлей исключён из захвата экрана (OBS/скриншоты)
+- No clicks — highlighting only
+- Elo cap: moves match the declared level
+- Random display delay + light randomization at low Elo
+- Overlay excluded from screen capture (OBS/screenshots)

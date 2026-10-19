@@ -170,8 +170,8 @@ class Calibrator:
         sh = win.winfo_screenheight()
         win.geometry(f"{sw}x{sh}+0+0")
         lbl = tk.Label(win,
-                       text="Кликни два противоположных УГЛА ДОСКИ "
-                            "(по внешним краям клеток)\nEsc — отмена",
+                       text="Click two OPPOSITE CORNERS of the board "
+                            "(outer edges of the squares)\nEsc — cancel",
                        fg="#ffffff", bg="#1c1f26",
                        font=("Segoe UI", 14, "bold"), pady=10)
         lbl.pack(side=tk.TOP, fill=tk.X)

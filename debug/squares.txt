@@ -1,0 +1,10 @@
+r n b . . . r .
+p p k . n . Q .
+. . p p K R . p
+. Q R P k P . .
+. P P . Q P . .
+. . . . . . . .
+. . . N P . P P
+R . . . K B . R
+
+rnb3R1/ppk1n1Q1/2ppKR1p/1QRPkP2/1PP1QP2/8/3NP1PP/R3KB1R b KQ - 0 1

@@ -153,7 +153,7 @@ class ControlPanel:
             return sw
 
         # engine ---------------------------------------------------------
-        sec1 = section("ДВИЖОК")
+        sec1 = section("ENGINE")
         row = tk.Frame(sec1, bg=BG2)
         row.pack(fill=tk.X, padx=10, pady=(0, 4))
         tk.Label(row, text="Elo:", fg=FG, bg=BG2,
@@ -164,29 +164,29 @@ class ControlPanel:
                           state="readonly", width=8, font=("Segoe UI", 11))
         cb.pack(side=tk.RIGHT)
         cb.bind("<<ComboboxSelected>>", self._on_elo)
-        tk.Label(sec1, text="движок играет на выбранном уровне — "
-                            "1700 ходит как человек 1700",
+        tk.Label(sec1, text="engine plays at the selected level — "
+                            "1700 moves like a 1700 human",
                  fg="#6b7480", bg=BG2,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10)
-        self.sw_top3 = switch_row(sec1, "3 варианта хода  (F4)",
+        self.sw_top3 = switch_row(sec1, "3 move options  (F4)",
                                   self.cfg.get("show_top3", True), self._on_top3,
-                                  "зелёный = лучший, жёлтый/оранжевый = "
-                                  "альтернативы")
-        self.sw_delay = switch_row(sec1, "Human-delay задержка",
+                                  "green = best, yellow/orange = "
+                                  "alternatives")
+        self.sw_delay = switch_row(sec1, "Human-delay",
                                    self.cfg.get("human_delay_on", True),
                                    self._on_delay_switch,
-                                   "показ хода через случайные 0.3–1.4с — "
-                                   "время реакции выглядит живым")
+                                   "shows the move after random 0.3–1.4s — "
+                                   "reaction time looks human")
         drow = tk.Frame(sec1, bg=BG2)
         drow.pack(fill=tk.X, padx=10, pady=(2, 6))
-        tk.Label(drow, text="мин", fg=FGDIM, bg=BG2,
+        tk.Label(drow, text="min", fg=FGDIM, bg=BG2,
                  font=("Segoe UI", 8)).pack(side=tk.LEFT)
         self.delay_var = tk.DoubleVar(
             value=self.cfg.get("human_delay_min_ms", 300) / 1000.0)
         ttk.Scale(drow, from_=0.2, to=3.0, variable=self.delay_var,
                   command=self._on_delay_slide).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=6)
-        tk.Label(drow, text="макс", fg=FGDIM, bg=BG2,
+        tk.Label(drow, text="max", fg=FGDIM, bg=BG2,
                  font=("Segoe UI", 8)).pack(side=tk.LEFT)
         self.delay_max_var = tk.DoubleVar(
             value=self.cfg.get("human_delay_max_ms", 1400) / 1000.0)
@@ -195,25 +195,25 @@ class ControlPanel:
             side=tk.LEFT, fill=tk.X, expand=True, padx=6)
 
         # overlay --------------------------------------------------------
-        sec2 = section("ОВЕРЛЕЙ")
-        self.sw_overlay = switch_row(sec2, "Показывать оверлей  (F3)",
+        sec2 = section("OVERLAY")
+        self.sw_overlay = switch_row(sec2, "Show overlay  (F3)",
                                      True, self._on_overlay_switch,
-                                     "подсветка поверх доски; невидим для OBS "
-                                     "и скриншотов")
-        self.sw_arrows = switch_row(sec2, "Стрелки хода", True,
+                                     "highlights over the board; invisible to OBS "
+                                     "and screenshots")
+        self.sw_arrows = switch_row(sec2, "Move arrows", True,
                                     self._on_arrow_switch,
-                                    "линия от клетки к клетке + бейдж ранга")
+                                    "line from square to square + rank badge")
 
         # board ----------------------------------------------------------
-        sec3 = section("ДОСКА")
-        self.sw_autodetect = switch_row(sec3, "Авто-детект доски",
+        sec3 = section("BOARD")
+        self.sw_autodetect = switch_row(sec3, "Auto-detect board",
                                         self.cfg.get("autodetect", True),
                                         self._on_autodetect_switch,
-                                        "ищет доску сам + замеряет её цвета; "
-                                        "выключи — только ручная калибровка")
+                                        "finds the board itself + measures its colors; "
+                                        "off = manual calibration only")
         brow = tk.Frame(sec3, bg=BG2)
         brow.pack(fill=tk.X, padx=10, pady=(2, 8))
-        tk.Button(brow, text="⬚  Калибровать доску  (F2)",
+        tk.Button(brow, text="⬚  Calibrate board  (F2)",
                   command=self._calibrate,
                   bg=BG3, fg=FG, activebackground="#353b48",
                   activeforeground=FG, relief=tk.FLAT,
@@ -222,18 +222,18 @@ class ControlPanel:
         # main button + status -------------------------------------------
         btns = tk.Frame(self.root, bg=BG)
         btns.pack(fill=tk.X, padx=16, pady=(8, 4))
-        self.start_btn = tk.Button(btns, text="▶  Начать анализ  (F1)",
+        self.start_btn = tk.Button(btns, text="▶  Start analysis  (F1)",
                                    command=self._toggle, bg=ACCENT,
                                    fg="#101608", activebackground=ACCENT2,
                                    activeforeground="#101608", relief=tk.FLAT,
                                    font=("Segoe UI", 11, "bold"), pady=8,
                                    cursor="hand2")
         self.start_btn.pack(fill=tk.X)
-        self.status_var = tk.StringVar(value="● стоп — нажми F1 или кнопку")
+        self.status_var = tk.StringVar(value="● stopped — press F1 or the button")
         tk.Label(self.root, textvariable=self.status_var, fg=FGDIM, bg=BG2,
                  font=("Segoe UI", 9, "bold"), pady=5).pack(
             fill=tk.X, padx=16, pady=(4, 0))
-        tk.Label(self.root, text="лог", fg="#707a86", bg=BG,
+        tk.Label(self.root, text="log", fg="#707a86", bg=BG,
                  font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=18,
                                                     pady=(8, 2))
         self.log = scrolledtext.ScrolledText(self.root, bg="#14171c",
@@ -243,8 +243,8 @@ class ControlPanel:
                                              height=9)
         self.log.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 4))
         tk.Label(self.root,
-                 text="F1 старт/стоп · F2 калибровка · F3 скрыть оверлей · "
-                      "F4 1/3 хода · F5 debug-дамп",
+                 text="F1 start/stop · F2 calibrate · F3 hide overlay · "
+                      "F4 1/3 moves · F5 debug dump",
                  fg="#5a6370", bg=BG, font=("Segoe UI", 8)).pack(pady=(2, 8))
 
     # -- hotkeys ----------------------------------------------------------------
@@ -269,7 +269,7 @@ class ControlPanel:
         if self.worker and self.worker.is_alive():
             self.worker.dump_debug()
         else:
-            self._log("запусти анализ (F1) — потом F5 сохранит дамп")
+            self._log("start analysis (F1) — then F5 saves the dump")
 
     # -- handlers -----------------------------------------------------------------
     def _on_top3(self):
@@ -310,8 +310,8 @@ class ControlPanel:
         save_config(self.cfg)
         if self.worker and self.worker.engine:
             prof = self.worker.engine.set_profile(elo)
-            self._log(f"эло → {elo} "
-                      f"(skill {prof['skill']}, movetime {prof['movetime']}мс)")
+            self._log(f"elo -> {elo} "
+                      f"(skill {prof['skill']}, movetime {prof['movetime']}ms)")
 
     def _toggle(self):
         if self.worker and self.worker.is_alive():
@@ -328,9 +328,9 @@ class ControlPanel:
         self.overlay.show_arrows = bool(self.sw_arrows.state)
         self.worker = Worker(self.cfg, self.ui_queue)
         self.worker.start()
-        self.start_btn.config(text="■  Остановить (F1)", bg="#c0453b",
+        self.start_btn.config(text="■  Stop (F1)", bg="#c0453b",
                               activebackground="#d95b50")
-        self.status_var.set("● запускаюсь...")
+        self.status_var.set("● starting...")
 
     def _stop(self):
         if self.worker:
@@ -342,10 +342,10 @@ class ControlPanel:
                     pass
         self.worker = None
         self.overlay.clear()
-        self.start_btn.config(text="▶  Начать анализ (F1)", bg=ACCENT,
+        self.start_btn.config(text="▶  Start analysis (F1)", bg=ACCENT,
                               activebackground=ACCENT2)
-        self.status_var.set("● стоп")
-        self._log("анализ остановлен")
+        self.status_var.set("● stopped")
+        self._log("analysis stopped")
 
     def _calibrate(self):
         box = self.calibrator.select()
@@ -359,7 +359,7 @@ class ControlPanel:
             self.overlay.set_region(self.worker.detector.region)
             self.cfg["region"] = dict(self.worker.detector.region)
             save_config(self.cfg)
-            self._log(f"доска перекалибрована: {box[2]}x{box[3]} "
+            self._log(f"board recalibrated: {box[2]}x{box[3]} "
                       f"@ ({box[0]},{box[1]})")
         else:
             d = BoardDetector()
@@ -367,8 +367,8 @@ class ControlPanel:
             self.overlay.set_region(d.region)
             self.cfg["region"] = d.region
             save_config(self.cfg)
-            self._log(f"доска запомнена: {box[2]}x{box[3]} @ ({box[0]},{box[1]}) "
-                      f"(при запуске подхватится)")
+            self._log(f"board saved: {box[2]}x{box[3]} @ ({box[0]},{box[1]}) "
+                      f"(picked up on start)")
 
     def _log(self, text):
         stamp = time.strftime("%H:%M:%S")
