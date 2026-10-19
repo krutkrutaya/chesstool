@@ -425,18 +425,34 @@ class BoardDetector:
         if c < 8:
             return False
         hits = 0
+        total = 0
+        pad = max(3, c // 10)          # inset from cell border
+        ps = max(3, c // 14)           # patch size
         for r in range(0, 8, 2):
             for cc in range(0, 8, 2):
-                y = r * c + c // 2
-                x = cc * c + c // 2
-                if y >= img.shape[0] or x >= img.shape[1]:
-                    continue
-                px = img[y, x]
-                for lt, dk in THEMES:
-                    if _rgb_close(px, lt) or _rgb_close(px, dk):
-                        hits += 1
+                y = r * c
+                x = cc * c
+                corners = [
+                    (y + pad, x + pad),
+                    (y + pad, x + c - pad - ps),
+                    (y + c - pad - ps, x + pad),
+                    (y + c - pad - ps, x + c - pad - ps),
+                ]
+                cell_ok = False
+                for (yy, xx) in corners:
+                    if (yy + ps <= img.shape[0] and xx + ps <= img.shape[1]
+                            and yy >= 0 and xx >= 0):
+                        patch = img[yy:yy + ps, xx:xx + ps].reshape(-1, 3).mean(axis=0)
+                        for lt, dk in THEMES:
+                            if _rgb_close(patch, lt) or _rgb_close(patch, dk):
+                                cell_ok = True
+                                break
+                    if cell_ok:
                         break
-        return hits >= 10  # 16 sampled, allow a few covered by pieces
+                total += 1
+                if cell_ok:
+                    hits += 1
+        return hits >= 6  # 16 sampled cells; pieces can cover several centres
 
     # ------------------------------------------------------------------
     def _cell_bg(self, cell_img: np.ndarray):
@@ -579,6 +595,7 @@ class Overlay:
         self.canvas = tk.Canvas(self.root, bg=self.TRANSPARENT_KEY, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.hidden = False
+        self.show_arrows = True
         self._moves = None
         self._region = None
         self._layout()
@@ -643,22 +660,23 @@ class Overlay:
             self.canvas.create_line(x2 + max(0, -d), y2 + c, x2 + c + min(0, d), y2,
                                     fill=color, width=max(1, w // 3))
             # arrow center-to-center
-            cx1, cy1 = x1 + c // 2, y1 + c // 2
-            cx2, cy2 = x2 + c // 2, y2 + c // 2
-            dx, dy = cx2 - cx1, cy2 - cy1
-            L = math.hypot(dx, dy) or 1.0
-            ux, uy = dx / L, dy / L
-            # trim arrow to not cover the badge too much
-            ex, ey = cx2 - ux * (c // 2.4), cy2 - uy * (c // 2.4)
-            self.canvas.create_line(cx1 + ux * (c // 3.4), cy1 + uy * (c // 3.4), ex, ey,
-                                    fill=color, width=w + 1)
-            ah = max(8, c // 3)
-            self.canvas.create_polygon(ex + ux * ah, ey + uy * ah,
-                                       ex - uy * ah * 0.55 - ux * ah * 0.35,
-                                       ey + ux * ah * 0.55 - uy * ah * 0.35,
-                                       ex + uy * ah * 0.55 - ux * ah * 0.35,
-                                       ey - ux * ah * 0.55 - uy * ah * 0.35,
-                                       fill=color, outline=color)
+            if self.show_arrows:
+                cx1, cy1 = x1 + c // 2, y1 + c // 2
+                cx2, cy2 = x2 + c // 2, y2 + c // 2
+                dx, dy = cx2 - cx1, cy2 - cy1
+                L = math.hypot(dx, dy) or 1.0
+                ux, uy = dx / L, dy / L
+                # trim arrow to not cover the badge too much
+                ex, ey = cx2 - ux * (c // 2.4), cy2 - uy * (c // 2.4)
+                self.canvas.create_line(cx1 + ux * (c // 3.4), cy1 + uy * (c // 3.4), ex, ey,
+                                        fill=color, width=w + 1)
+                ah = max(8, c // 3)
+                self.canvas.create_polygon(ex + ux * ah, ey + uy * ah,
+                                           ex - uy * ah * 0.55 - ux * ah * 0.35,
+                                           ey + ux * ah * 0.55 - uy * ah * 0.35,
+                                           ex + uy * ah * 0.55 - ux * ah * 0.35,
+                                           ey - ux * ah * 0.55 - uy * ah * 0.35,
+                                           fill=color, outline=color)
             # rank badge
             bx = x1 + c - pad * 2
             by = y1 + pad * 2
@@ -888,9 +906,12 @@ class Worker(threading.Thread):
                 picks = [((t[0], t[1] + (" ★" if t is chosen else ""), t[2])) for t in picks]
             show = picks[:3 if self.cfg.get("show_top3", True) else 1]
             # human delay — keeps reaction time statistically human
-            dmin = int(self.cfg.get("human_delay_min_ms", 300)) / 1000.0
-            dmax = int(self.cfg.get("human_delay_max_ms", 1400)) / 1000.0
-            delay = random.uniform(dmin, max(dmax, dmin + 0.01))
+            if self.cfg.get("human_delay_on", True):
+                dmin = int(self.cfg.get("human_delay_min_ms", 300)) / 1000.0
+                dmax = int(self.cfg.get("human_delay_max_ms", 1400)) / 1000.0
+                delay = random.uniform(dmin, max(dmax, dmin + 0.01))
+            else:
+                delay = 0.0
             time.sleep(delay)
             self.ui.put(("region", dict(self.detector.region)))
             self.moves({
@@ -914,9 +935,85 @@ class Worker(threading.Thread):
 # ----------------------------------------------------------------------------
 BG      = "#1c1f26"
 BG2     = "#22262f"
+BG3     = "#2a2f3a"
 FG      = "#e6e6e6"
+FGDIM   = "#9aa3af"
 ACCENT  = "#81b64c"
 ACCENT2 = "#39d353"
+
+class Switch(tk.Canvas):
+    """iOS-style toggle switch, animated."""
+    def __init__(self, master, width=52, height=26, bg=BG,
+                 on_color=ACCENT2, off_color="#3a4150", command=None):
+        super().__init__(master, width=width, height=height, bg=bg,
+                         highlightthickness=0, cursor="hand2")
+        self.w, self.h = width, height
+        self.on_color, self.off_color = on_color, off_color
+        self.command = command
+        self._state = False
+        self._pos = 2.0  # knob x-offset
+        self._knob_r = (height - 6) / 2
+        self._tag_move = None
+        self.bind("<Button-1>", lambda e: self.toggle())
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        pad = 2
+        track_color = self.on_color if self._state else self.off_color
+        r = self.h / 2 - pad
+        x0, y0 = pad, pad
+        x1, y1 = self.w - pad, self.h - pad
+        # rounded track: rect + 2 circles
+        self.create_rectangle(x0 + r, y0, x1 - r, y1, fill=track_color, outline=track_color)
+        self.create_oval(x0, y0, x0 + 2 * r, y1, fill=track_color, outline=track_color)
+        self.create_oval(x1 - 2 * r, y0, x1, y1, fill=track_color, outline=track_color)
+        # knob
+        kx = pad + r + self._pos * (self.w - 2 * pad - 2 * r) / (self.w - 2 * pad - 2 * r)
+        kx = pad + self._pos
+        knob_d = self.h - 6
+        self.create_oval(kx, 3, kx + knob_d, 3 + knob_d, fill="#f4f6f8",
+                         outline="#d5d9de")
+        if self._state:
+            self._dot = self.create_oval(kx + knob_d - 9, 3 + knob_d / 2 - 3,
+                                         kx + knob_d - 5, 3 + knob_d / 2 + 1,
+                                         fill="#2f6f31", outline="#2f6f31")
+
+    @property
+    def state(self):
+        return self._state
+
+    def set(self, value: bool, fire: bool = False):
+        self._state = bool(value)
+        target = (self.w - 6) - (self.h - 6) if self._state else 2.0
+        self._animate_to(target)
+        if fire and self.command:
+            self.command()
+
+    def toggle(self):
+        self._state = not self._state
+        target = (self.w - 6) - (self.h - 6) if self._state else 2.0
+        self._animate_to(target)
+        if self.command:
+            self.command()
+
+    def _animate_to(self, target: float):
+        if self._tag_move:
+            try:
+                self.after_cancel(self._tag_move)
+            except Exception:
+                pass
+        self._animate_step(target, 0)
+
+    def _animate_step(self, target: float, step: int):
+        speed = (target - self._pos) * 0.35
+        if abs(target - self._pos) < 0.8 or step > 12:
+            self._pos = target
+        else:
+            self._pos += speed
+        self._draw()
+        if abs(target - self._pos) >= 0.8:
+            self._tag_move = self.after(16, lambda: self._animate_step(target, step + 1))
 
 class ControlPanel:
     def __init__(self):
@@ -950,64 +1047,113 @@ class ControlPanel:
             pass
         style.configure("TCombobox", fieldbackground=BG2, background=BG2, foreground=FG,
                         arrowcolor=ACCENT)
-        style.configure("Horizontal.TScale", background=BG2, troughcolor=BG)
+        style.configure("Horizontal.TScale", background=BG2, troughcolor=BG3)
 
+        # --- header ---------------------------------------------------
         title = tk.Label(self.root, text="♟ ChessTool", fg=ACCENT2, bg=BG,
                          font=("Segoe UI", 18, "bold"))
-        title.pack(pady=(14, 4))
-        sub = tk.Label(self.root, text="chess.com assistant · elo-capped engine",
-                       fg="#9aa3af", bg=BG, font=("Segoe UI", 9))
-        sub.pack(pady=(0, 10))
+        title.pack(pady=(14, 2))
+        tk.Label(self.root, text="chess.com assistant · elo-capped engine",
+                 fg=FGDIM, bg=BG, font=("Segoe UI", 9)).pack(pady=(0, 8))
 
-        frm = tk.Frame(self.root, bg=BG)
-        frm.pack(fill=tk.X, padx=16)
+        def section(text):
+            box = tk.Frame(self.root, bg=BG2, highlightbackground="#14161b",
+                           highlightthickness=1)
+            box.pack(fill=tk.X, padx=16, pady=6)
+            tk.Label(box, text=text, fg=ACCENT, bg=BG2,
+                     font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10,
+                                                        pady=(6, 2))
+            return box
 
-        tk.Label(frm, text="Elo движка:", fg=FG, bg=BG,
-                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        def switch_row(parent, label, initial, command, hint=""):
+            row = tk.Frame(parent, bg=BG2)
+            row.pack(fill=tk.X, padx=10, pady=(2, 4))
+            txt = tk.Label(row, text=label, fg=FG, bg=BG2, font=("Segoe UI", 10))
+            txt.pack(side=tk.LEFT)
+            sw = Switch(row, command=command, bg=BG2)
+            sw.pack(side=tk.RIGHT)
+            sw.set(bool(initial))
+            if hint:
+                tk.Label(parent, text=hint, fg="#6b7480", bg=BG2,
+                         font=("Segoe UI", 8)).pack(anchor="w", padx=10)
+            return sw
+
+        # --- engine section -------------------------------------------
+        sec1 = section("ДВИЖОК")
+        row = tk.Frame(sec1, bg=BG2)
+        row.pack(fill=tk.X, padx=10, pady=(0, 4))
+        tk.Label(row, text="Elo:", fg=FG, bg=BG2,
+                 font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
         self.elo_var = tk.StringVar(value=str(self.cfg.get("elo", 1700)))
-        cb = ttk.Combobox(frm, textvariable=self.elo_var, values=[str(e) for e in ELO_LEVELS],
-                          state="readonly", width=10, font=("Segoe UI", 11))
-        cb.grid(row=0, column=1, sticky="e", pady=4)
+        cb = ttk.Combobox(row, textvariable=self.elo_var,
+                          values=[str(e) for e in ELO_LEVELS],
+                          state="readonly", width=8, font=("Segoe UI", 11))
+        cb.pack(side=tk.RIGHT)
         cb.bind("<<ComboboxSelected>>", self._on_elo)
+        tk.Label(sec1, text="движок играет на выбранном уровне — 1700 ходит как человек 1700",
+                 fg="#6b7480", bg=BG2, font=("Segoe UI", 8)).pack(anchor="w", padx=10)
 
-        self.top3_var = tk.BooleanVar(value=bool(self.cfg.get("show_top3", True)))
-        tk.Checkbutton(frm, text="показывать 3 варианта (F4 — переключить)",
-                       variable=self.top3_var, command=self._on_top3,
-                       fg=FG, bg=BG, selectcolor=BG2, activebackground=BG,
-                       activeforeground=FG, font=("Segoe UI", 9)).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.sw_top3 = switch_row(sec1, "3 варианта хода  (F4)",
+                                  self.cfg.get("show_top3", True),
+                                  self._on_top3,
+                                  "зелёный = лучший, жёлтый и оранжевый = альтернативы")
 
-        tk.Label(frm, text="Задержка показа, сек", fg=FG, bg=BG,
-                 font=("Segoe UI", 9)).grid(row=2, column=0, sticky="w", pady=(10, 0))
+        self.sw_delay = switch_row(sec1, "Human-delay задержка",
+                                   self.cfg.get("human_delay_on", True),
+                                   self._on_delay_switch,
+                                   "показ хода через случайные 0.3–1.4с — время реакции выглядит живым")
+        drow = tk.Frame(sec1, bg=BG2)
+        drow.pack(fill=tk.X, padx=10, pady=(2, 6))
+        tk.Label(drow, text="мин", fg=FGDIM, bg=BG2, font=("Segoe UI", 8)).pack(side=tk.LEFT)
         self.delay_var = tk.DoubleVar(value=self.cfg.get("human_delay_min_ms", 300) / 1000.0)
+        ttk.Scale(drow, from_=0.2, to=3.0, variable=self.delay_var,
+                  command=self._on_delay_slide).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        tk.Label(drow, text="макс", fg=FGDIM, bg=BG2, font=("Segoe UI", 8)).pack(side=tk.LEFT)
         self.delay_max_var = tk.DoubleVar(value=self.cfg.get("human_delay_max_ms", 1400) / 1000.0)
-        s1 = ttk.Scale(frm, from_=0.2, to=3.0, variable=self.delay_var)
-        s1.grid(row=3, column=0, sticky="ew", pady=(0, 2))
-        s2 = ttk.Scale(frm, from_=0.3, to=5.0, variable=self.delay_max_var)
-        s2.grid(row=4, column=0, sticky="ew")
+        ttk.Scale(drow, from_=0.3, to=5.0, variable=self.delay_max_var,
+                  command=self._on_delay_slide).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
 
+        # --- overlay section -------------------------------------------
+        sec2 = section("ОВЕРЛЕЙ")
+        self.sw_overlay = switch_row(sec2, "Показывать оверлей  (F3)",
+                                     True, self._on_overlay_switch,
+                                     "подсветка клеток поверх доски; невидим для OBS и скриншотов")
+        self.sw_highlight_arrow = switch_row(sec2, "Стрелки хода", True,
+                                             self._on_arrow_switch,
+                                             "линия от клетки к клетке + бейдж ранга")
+
+        # --- board section ---------------------------------------------
+        sec3 = section("ДОСКА")
+        self.sw_autodetect = switch_row(sec3, "Авто-детект доски",
+                                        self.cfg.get("autodetect", True),
+                                        self._on_autodetect_switch,
+                                        "ищет доску chess.com сам; выключи — только ручная калибровка")
+        brow = tk.Frame(sec3, bg=BG2)
+        brow.pack(fill=tk.X, padx=10, pady=(2, 8))
+        tk.Button(brow, text="⬚  Калибровать доску  (F2)", command=self._calibrate,
+                  bg=BG3, fg=FG, activebackground="#353b48", activeforeground=FG,
+                  relief=tk.FLAT, font=("Segoe UI", 9), pady=5, cursor="hand2").pack(
+            fill=tk.X)
+
+        # --- main button + status --------------------------------------
         btns = tk.Frame(self.root, bg=BG)
-        btns.pack(fill=tk.X, padx=16, pady=12)
-        self.start_btn = tk.Button(btns, text="▶  Начать анализ (F1)", command=self._toggle,
+        btns.pack(fill=tk.X, padx=16, pady=(8, 4))
+        self.start_btn = tk.Button(btns, text="▶  Начать анализ  (F1)", command=self._toggle,
                                    bg=ACCENT, fg="#101608", activebackground=ACCENT2,
                                    activeforeground="#101608", relief=tk.FLAT,
                                    font=("Segoe UI", 11, "bold"), pady=8, cursor="hand2")
         self.start_btn.pack(fill=tk.X)
-        tk.Button(btns, text="⬚  Калибровать доску (F2)", command=self._calibrate,
-                  bg=BG2, fg=FG, activebackground="#2d323d", activeforeground=FG,
-                  relief=tk.FLAT, font=("Segoe UI", 10), pady=6, cursor="hand2").pack(
-            fill=tk.X, pady=(6, 0))
 
-        self.status_var = tk.StringVar(value="● стоп — нажми F1")
-        self.status_lbl = tk.Label(self.root, textvariable=self.status_var, fg="#9aa3af",
+        self.status_var = tk.StringVar(value="● стоп — нажми F1 или кнопку")
+        self.status_lbl = tk.Label(self.root, textvariable=self.status_var, fg=FGDIM,
                                    bg=BG2, font=("Segoe UI", 9, "bold"), pady=5)
-        self.status_lbl.pack(fill=tk.X, padx=16)
+        self.status_lbl.pack(fill=tk.X, padx=16, pady=(4, 0))
 
         tk.Label(self.root, text="лог", fg="#707a86", bg=BG,
                  font=("Segoe UI", 8, "bold")).pack(anchor="w", padx=18, pady=(8, 2))
         self.log = scrolledtext.ScrolledText(self.root, bg="#14171c", fg="#b9c2cc",
                                              font=("Consolas", 9), relief=tk.FLAT,
-                                             state=tk.DISABLED, height=14)
+                                             state=tk.DISABLED, height=9)
         self.log.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 4))
         foot = tk.Label(self.root, text="F1 старт/стоп · F2 калибровка · F3 скрыть оверлей · F4 1/3 хода",
                         fg="#5a6370", bg=BG, font=("Segoe UI", 8))
@@ -1030,14 +1176,35 @@ class ControlPanel:
             pass  # keyboard lib may need admin; GUI buttons still work
 
     def _flip_top3(self):
-        self.top3_var.set(not self.top3_var.get())
-        self._on_top3()
-
-        frm = tk.Frame(self.root, bg=BG)
-        frm.pack(fill=tk.X, padx=16)
+        self.sw_top3.toggle()
 
     def _on_top3(self):
-        self.cfg["show_top3"] = bool(self.top3_var.get())
+        self.cfg["show_top3"] = bool(self.sw_top3.state)
+        save_config(self.cfg)
+
+    def _on_delay_switch(self):
+        self.cfg["human_delay_on"] = bool(self.sw_delay.state)
+        save_config(self.cfg)
+
+    def _on_delay_slide(self, _v=None):
+        lo, hi = float(self.delay_var.get()), float(self.delay_max_var.get())
+        if hi < lo + 0.1:
+            hi = lo + 0.1
+            self.delay_max_var.set(hi)
+        self.cfg["human_delay_min_ms"] = int(lo * 1000)
+        self.cfg["human_delay_max_ms"] = int(hi * 1000)
+        save_config(self.cfg)
+
+    def _on_overlay_switch(self):
+        want_hidden = not self.sw_overlay.state
+        if self.overlay.hidden != want_hidden:
+            self.overlay.toggle_hidden()
+
+    def _on_arrow_switch(self):
+        self.overlay.show_arrows = bool(self.sw_highlight_arrow.state)
+
+    def _on_autodetect_switch(self):
+        self.cfg["autodetect"] = bool(self.sw_autodetect.state)
         save_config(self.cfg)
 
     def _on_elo(self, _e=None):
@@ -1060,7 +1227,10 @@ class ControlPanel:
     def _start(self):
         self.cfg["human_delay_min_ms"] = int(float(self.delay_var.get()) * 1000)
         self.cfg["human_delay_max_ms"] = int(float(self.delay_max_var.get()) * 1000)
+        self.cfg["human_delay_on"] = bool(self.sw_delay.state)
+        self.cfg["show_top3"] = bool(self.sw_top3.state)
         save_config(self.cfg)
+        self.overlay.show_arrows = bool(self.sw_highlight_arrow.state)
         self.worker = Worker(self.cfg, self.ui_queue)
         self.worker.start()
         self.start_btn.config(text="■  Остановить (F1)", bg="#c0453b",
