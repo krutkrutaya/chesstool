@@ -1,0 +1,6 @@
+numpy>=2.0
+pillow>=10.0
+mss>=10.0
+chess>=1.11
+keyboard>=0.13.5
+pyinstaller>=6.0
