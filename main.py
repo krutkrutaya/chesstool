@@ -291,8 +291,21 @@ class BoardDetector:
             arr = np.asarray(img, dtype=np.float32)
             rgb = arr[:, :, :3]
             alpha = arr[:, :, 3] / 255.0
-            mask = (alpha > 0.35).astype(np.float32)
-            # normalize template brightness away — match shape, not shade
+            mask = (alpha > 0.55).astype(np.float32)
+            # erode mask ~2px to drop anti-aliased edges (sum of 5x5 shifts)
+            k = 2
+            if size >= 40 and mask.shape[0] > 2 * k and mask.shape[1] > 2 * k:
+                m = mask.astype(np.int32)
+                h, w = m.shape
+                win = 2 * k + 1
+                s = np.zeros((h - 2 * k, w - 2 * k), dtype=np.int32)
+                for dy in range(win):
+                    for dx in range(win):
+                        s += m[dy:dy + h - 2 * k, dx:dx + w - 2 * k]
+                er = np.zeros_like(m)
+                er[k:h - k, k:w - k] = (s == win * win)
+                if er.sum() > size * size * 0.08:  # erosion didn't eat everything
+                    mask = er.astype(np.float32)
             self._tpl_cache[key] = (rgb, mask)
         return self._tpl_cache[key]
 
@@ -456,34 +469,35 @@ class BoardDetector:
 
     # ------------------------------------------------------------------
     def _cell_bg(self, cell_img: np.ndarray):
-        h, w = cell_img.shape[:2]
-        pad = max(3, h // 12)
-        patches = np.concatenate([
-            cell_img[:pad, :pad].reshape(-1, 3),
-            cell_img[:pad, -pad:].reshape(-1, 3),
-            cell_img[-pad:, :pad].reshape(-1, 3),
-            cell_img[-pad:, -pad:].reshape(-1, 3),
-        ])
-        return np.median(patches, axis=0)
+        """Modal (most frequent) color of the cell = square background.
+        Robust to pieces (they cover <50%), coordinates letters and highlights."""
+        q = (cell_img[:, :, :3] // 8).astype(np.int32)
+        flat = (q[:, :, 0] << 16) | (q[:, :, 1] << 8) | q[:, :, 2]
+        counts = np.bincount(flat.ravel(), minlength=(1 << 24))
+        mode_code = int(np.argmax(counts))
+        r = (mode_code >> 16) & 0xFF
+        g = (mode_code >> 8) & 0xFF
+        b = mode_code & 0xFF
+        return np.array([r, g, b], dtype=np.float32) * 8.0 + 4.0
 
     def _fingerprint(self, cell_img: np.ndarray):
         g = cell_img.astype(np.float32)
         return float(g.mean()), float(g.std())
 
     def _classify_cell(self, cell_img: np.ndarray, bg: np.ndarray, size: int):
-        """returns piece char, None (empty) or '?' (uncertain)"""
+        """returns (piece | None | '?', best_guess_char)"""
         f = cell_img.astype(np.float32)
-        # empty check: central region close to background color
-        m = size // 6
-        center = f[m:size - m, m:size - m]
-        d = np.abs(center - bg)
-        if d.mean() < 14.0 and d.std() < 12.0:
-            return None
-        # template match
-        best_ch, best_mse = None, 1e9
-        second = 1e9
+        # empty check: fraction of pixels far from modal background color
+        dmax = np.abs(f[:, :, :3] - bg).max(axis=2)
+        frac = float((dmax > 22).mean())
+        if frac < 0.10:
+            return None, None
+        # template match over eroded piece masks (background not compared)
+        best_ch, best_mse, second = None, 1e9, 1e9
         for ch in self.templates:
             tpl, mask = self._tpl(ch, size)
+            if mask.sum() < 1:
+                continue
             diff = (f[:, :, :3] - tpl) * mask[:, :, None]
             mse = float((diff * diff).sum() / (mask.sum() * 3.0))
             if mse < best_mse:
@@ -491,11 +505,15 @@ class BoardDetector:
                 best_ch, best_mse = ch, mse
             elif mse < second:
                 second = mse
-        if best_mse < 650.0:
-            return best_ch
-        if best_mse < 1500.0 and second - best_mse > 40.0:
-            return best_ch
-        return "?"
+        if best_mse < 900.0:
+            return best_ch, best_ch
+        if best_mse < 2800.0 and (second - best_mse) > 25.0:
+            return best_ch, best_ch
+        return "?", best_ch  # uncertain, but best-guess candidate attached
+
+    def _classify_cell_compat(self, cell_img, bg, size):
+        piece, _ = self._classify_cell(cell_img, bg, size)
+        return piece
 
     def determine_flip(self, st: BoardState) -> bool:
         """True = we play black (white pieces are at the TOP of the screen)."""
@@ -535,7 +553,11 @@ class BoardDetector:
                 if c != tsize:
                     ci = Image.fromarray(cell).resize((tsize, tsize), Image.BILINEAR)
                     cell = np.asarray(ci, dtype=np.uint8)
-                piece = self._classify_cell(cell, bg, tsize)
+                piece, guess = self._classify_cell(cell, bg, tsize)
+                if piece == "?" and full and guess is not None:
+                    # full scan: trust the best-guess candidate instead of
+                    # blocking board assembly with a fatal '?'
+                    piece = guess
                 st.squares[(col, row)] = piece
                 m = c // 8
                 core = img[y0 + m:y0 + c - m, x0 + m:x0 + c - m]
@@ -782,6 +804,24 @@ class Worker(threading.Thread):
     def moves(self, data):
         self.ui.put(("moves", data))
 
+    def dump_debug(self):
+        """F5: save board screenshot + recognized squares for diagnosis."""
+        try:
+            dbg = os.path.join(user_data_dir(), "debug")
+            os.makedirs(dbg, exist_ok=True)
+            img = self.detector.capture()
+            Image.fromarray(img).save(os.path.join(dbg, "board.png"))
+            lines = []
+            for row in range(8):
+                lines.append(" ".join(
+                    (self.prev_state.squares.get((col, row)) or ".")
+                    for col in range(8)))
+            with open(os.path.join(dbg, "squares.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n\n" + self.board.fen() + "\n")
+            self.log(f"debug сохранён: {dbg}\\board.png + squares.txt")
+        except Exception as e:
+            self.log("debug ошибка: " + str(e))
+
     # ------------------------------------------------------------------
     def run(self):
         self.status("поиск доски...")
@@ -843,6 +883,7 @@ class Worker(threading.Thread):
             self.awaiting_our_move = False
             self.status(f"позиция захвачена, играем "
                         f"{'чёрными' if self.detector.flip else 'белыми'} — слежу за доской")
+            self.log(f"fen: {self.board.fen()}")
             return
 
         st, changed = self.detector.recognize(img, self.prev_state)
@@ -1172,8 +1213,15 @@ class ControlPanel:
             kb.add_hotkey("F2", safe(self._calibrate))
             kb.add_hotkey("F3", safe(lambda: self.overlay.toggle_hidden()))
             kb.add_hotkey("F4", safe(lambda: self._flip_top3()))
+            kb.add_hotkey("F5", safe(self._dump_debug))
         except Exception:
             pass  # keyboard lib may need admin; GUI buttons still work
+
+    def _dump_debug(self):
+        if self.worker and self.worker.is_alive():
+            self.worker.dump_debug()
+        else:
+            self._log("запусти анализ (F1) — потом F5 сохранит дамп")
 
     def _flip_top3(self):
         self.sw_top3.toggle()
