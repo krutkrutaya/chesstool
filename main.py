@@ -608,12 +608,13 @@ class BoardDetector:
                     (y + chh - pad - ps, x + cw - pad - ps),
                 ]
                 cell_ok = False
+                expect_light = (r + cc) % 2 == 0
                 for (yy, xx) in corners:
                     if (yy + ps <= img.shape[0] and xx + ps <= img.shape[1]
                             and yy >= 0 and xx >= 0):
                         patch = img[yy:yy + ps, xx:xx + ps].reshape(-1, 3).mean(axis=0)
                         for lt, dk in THEMES:
-                            if _rgb_close(patch, lt) or _rgb_close(patch, dk):
+                            if _rgb_close(patch, lt if expect_light else dk):
                                 cell_ok = True
                                 break
                     if cell_ok:
@@ -621,7 +622,7 @@ class BoardDetector:
                 total += 1
                 if cell_ok:
                     hits += 1
-        return hits >= 6  # 16 sampled cells; pieces can cover several centres
+        return hits >= 6  # checkerboard alternation required (16 sampled cells)
 
     # ------------------------------------------------------------------
     def _cell_bg(self, cell_img: np.ndarray):
@@ -737,9 +738,9 @@ class BoardDetector:
                     ci = Image.fromarray(cell).resize((tsize, tsize), Image.BILINEAR)
                     cell = np.asarray(ci, dtype=np.uint8)
                 piece, guess = self._classify_cell(cell, bg, tsize)
-                if piece == "?" and full and guess is not None:
-                    # full scan: trust the best-guess candidate instead of
-                    # blocking board assembly with a fatal '?'
+                if piece == "?" and guess is not None:
+                    # trust the best-guess candidate: '?' cells would break
+                    # move-matching (piece_map never equals a real position)
                     piece = guess
                 st.squares[(col, row)] = piece
                 m = max(3, min(cw, chh) // 8)
@@ -1076,8 +1077,10 @@ class Worker(threading.Thread):
             if b is None:
                 self.status("позиция не распознана, пробую ещё...")
                 return
-            # fix side-to-move: assume it's our move at rescan
-            b.turn = self.our_color
+            # side-to-move at rescan: white moves first in chess; with
+            # two-sided move matching the exact turn self-corrects on the
+            # next detected move, and after an enemy move it is always ours
+            b.turn = chess.WHITE
             self.board = b
             self.prev_state = st
             self.full_rescan_needed = False
@@ -1092,31 +1095,43 @@ class Worker(threading.Thread):
             return  # nothing moved
 
         # figure out which legal move leads to recognized position
-        board = self.board.copy(stack=False)
+        # search both sides: piece_map doesn't depend on side-to-move, so
+        # we try moves of WHITE and of BLACK (fixes playing as black:
+        # enemy's reply is a white move, not in "our" legal list)
+        base = self.board.copy(stack=False)
         candidate = None
+        mover_color = None
         piece_map_new = st.by_name(self.detector.flip)
-        for mv in board.legal_moves:
-            board.push(mv)
-            if {chess.square_name(sq): pc.symbol()
-                    for sq, pc in board.piece_map().items()} == piece_map_new:
-                candidate = mv
-                board.pop()
+        for turn_color in (chess.WHITE, chess.BLACK):
+            b2 = base.copy(stack=False)
+            b2.turn = turn_color
+            for mv in b2.legal_moves:
+                b2.push(mv)
+                if {chess.square_name(sq): pc.symbol()
+                        for sq, pc in b2.piece_map().items()} == piece_map_new:
+                    candidate = mv
+                    mover_color = turn_color
+                    b2.pop()
+                    break
+                b2.pop()
+            if candidate is not None:
                 break
-            board.pop()
 
         if candidate is None:
             # maybe two moves happened quickly (ours + theirs) or glitch — rescan
             self.full_rescan_needed = True
             return
 
-        mover_is_opponent = (board.turn != self.our_color)
+        mover_is_opponent = (mover_color != self.our_color)
+        san = candidate.uci()
+        try:
+            b_san = base.copy(stack=False)
+            b_san.turn = mover_color
+            san = b_san.san(candidate)
+        except Exception:
+            pass
 
         if mover_is_opponent:
-            # compute san BEFORE pushing (copy without stack can't pop)
-            try:
-                san = board.san(candidate)
-            except Exception:
-                san = candidate.uci()
             self.board.push(candidate)
             self.prev_state = st
             self.log(f"противник: {san}")
