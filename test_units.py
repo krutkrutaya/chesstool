@@ -25,7 +25,7 @@ def test_engine():
         lines = eng.analyse(b, M.profile_for(elo)["movetime"])
         ms = (time.time() - t0) * 1000
         assert lines and len(lines) <= 3, lines
-        mv, sc, rank = lines[0]
+        mv, sc, rank, cp = lines[0]
         assert len(mv) >= 4
         print(f"elo {elo}: {lines[:2]} in {ms:.0f} ms")
     eng.quit()

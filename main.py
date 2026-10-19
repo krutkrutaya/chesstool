@@ -184,7 +184,7 @@ class EngineWrapper:
         return prof
 
     def analyse(self, board: chess.Board, movetime_ms: int):
-        """Returns list of (move, score_string, rank) — up to 3 lines."""
+        """Returns list of (move, score_string, rank, centipawns) — up to 3 lines."""
         with self.lock:
             self._send("position fen " + board.fen())
             self._send(f"go movetime {int(movetime_ms)}")
@@ -203,24 +203,27 @@ class EngineWrapper:
                     if " score " in line:
                         sc_part = line.split(" score ")[1].split()
                         if sc_part[0] == "cp":
-                            sc = int(sc_part[1])
-                            score = f"{sc/100:+.2f}"
+                            cp = int(sc_part[1])
+                            score = f"{cp/100:+.2f}"
                         elif sc_part[0] == "mate":
-                            score = f"M{sc_part[1]}"
+                            mt = int(sc_part[1])
+                            cp = 10000 if mt > 0 else -10000
+                            score = f"M{mt}"
                         else:
+                            cp = 0
                             score = "?"
                         pvmove = line.split(" pv ")[1].split()[0]
-                        lines[multipv] = (pvmove, score)
+                        lines[multipv] = (pvmove, score, cp)
                 elif line.startswith("bestmove"):
                     best = line.split()[1] if len(line.split()) > 1 else None
                     break
             result = []
             for k in sorted(lines.keys())[:3]:
-                mv, sc = lines[k]
+                mv, sc, cp = lines[k]
                 if mv != "(none)":
-                    result.append((mv, sc, k))
+                    result.append((mv, sc, k, cp))
             if not result and best and best != "(none)":
-                result.append((best, "?", 1))
+                result.append((best, "?", 1, 0))
             return result
 
     def quit(self):
@@ -810,17 +813,22 @@ class Overlay:
         self.root.update_idletasks()
         make_clickthrough_and_hidden(self.root.winfo_id())
         self.root.withdraw()
+        self._shown = False
 
     def set_region(self, region: dict):
         self._region = region
 
     def show_moves(self, moves, flip: bool, cell: int):
-        """moves: list of (uci_str, score, rank) with rank 1..3"""
+        """moves: list of dicts {uci, score, rank, pct, star}"""
         if self._region is None or not moves:
             return
         self._moves = (list(moves), flip, cell)
         if self.hidden:
             return
+        if not self._shown:
+            self.root.deiconify()
+            make_clickthrough_and_hidden(self.root.winfo_id())
+            self._shown = True
         self._redraw()
 
     def _sq_rect(self, sq: str, flip: bool, cell: int):
@@ -840,10 +848,12 @@ class Overlay:
         if not self._moves:
             return
         moves, flip, cell = self._moves
-        for uci, score, rank in moves:
+        for m in moves:
+            uci = m["uci"]
             if len(uci) < 4:
                 continue
             frm, to = uci[:2], uci[2:4]
+            rank = m.get("rank", 1)
             color = self.COLORS[min(rank - 1, 2)]
             x1, y1, c = self._sq_rect(frm, flip, cell)
             x2, y2, _ = self._sq_rect(to, flip, cell)
@@ -859,8 +869,6 @@ class Overlay:
             for d in range(-c, c, step):
                 self.canvas.create_line(x2 + max(0, d), y2, x2 + d + c, y2 + c,
                                         fill=color, width=max(1, w // 3))
-            self.canvas.create_line(x2 + max(0, -d), y2 + c, x2 + c + min(0, d), y2,
-                                    fill=color, width=max(1, w // 3))
             # arrow center-to-center
             if self.show_arrows:
                 cx1, cy1 = x1 + c // 2, y1 + c // 2
@@ -868,7 +876,6 @@ class Overlay:
                 dx, dy = cx2 - cx1, cy2 - cy1
                 L = math.hypot(dx, dy) or 1.0
                 ux, uy = dx / L, dy / L
-                # trim arrow to not cover the badge too much
                 ex, ey = cx2 - ux * (c // 2.4), cy2 - uy * (c // 2.4)
                 self.canvas.create_line(cx1 + ux * (c // 3.4), cy1 + uy * (c // 3.4), ex, ey,
                                         fill=color, width=w + 1)
@@ -885,8 +892,21 @@ class Overlay:
             rr = max(7, c // 6)
             self.canvas.create_oval(bx - rr, by - rr, bx + rr, by + rr, fill=color,
                                     outline="#101010", width=1)
-            self.canvas.create_text(bx, by, text=str(rank), fill="#0a0a0a",
+            badge = ("★" if m.get("star") else str(rank))
+            self.canvas.create_text(bx, by, text=badge, fill="#0a0a0a",
                                     font=("Segoe UI", max(8, c // 7), "bold"))
+            # score + pct label near the to-square
+            label = f"{to}  {m.get('score','')}  {m.get('pct',0):.0f}%"
+            fs = max(9, c // 6)
+            tx = x2 + c // 2
+            ty = y2 - pad * 2
+            self.canvas.create_text(tx, ty, text=" " + label + " ", fill="#ffffff",
+                                    font=("Segoe UI", fs, "bold"), anchor=tk.S)
+            # dark chip behind the text for readability
+            self.canvas.create_text(tx, ty, text=" " + label + " ", fill="#111111",
+                                    font=("Segoe UI", fs, "bold"), anchor=tk.S,
+                                    offset=1)
+            self.canvas.tag_raise(None)
 
     def toggle_hidden(self) -> bool:
         self.hidden = not self.hidden
@@ -900,8 +920,9 @@ class Overlay:
 
     def clear(self):
         self._moves = None
-        if not self.hidden:
-            self._redraw()
+        if self._shown and not self.hidden:
+            self.root.withdraw()
+            self._shown = False
 
 # ----------------------------------------------------------------------------
 # calibrator (fullscreen 2-click region selector)
@@ -1076,7 +1097,8 @@ class Worker(threading.Thread):
         piece_map_new = st.by_name(self.detector.flip)
         for mv in board.legal_moves:
             board.push(mv)
-            if {sq: pc for sq, pc in board.piece_map().items()} == piece_map_new:
+            if {chess.square_name(sq): pc.symbol()
+                    for sq, pc in board.piece_map().items()} == piece_map_new:
                 candidate = mv
                 board.pop()
                 break
@@ -1088,17 +1110,15 @@ class Worker(threading.Thread):
             return
 
         mover_is_opponent = (board.turn != self.our_color)
-        self.board.push(candidate)
-        self.prev_state = st
 
         if mover_is_opponent:
-            # recompute san on the pre-move board
-            pre = self.board.copy(stack=False)
-            pre.pop()
+            # compute san BEFORE pushing (copy without stack can't pop)
             try:
-                san = pre.san(candidate)
+                san = board.san(candidate)
             except Exception:
                 san = candidate.uci()
+            self.board.push(candidate)
+            self.prev_state = st
             self.log(f"противник: {san}")
             self.status("думаю...")
             t0 = time.time()
@@ -1108,24 +1128,29 @@ class Worker(threading.Thread):
             if not lines:
                 self.status("движок не дал ход")
                 return
-            # low-elo: randomized pick with weights
+            # percent scores: quality relative to the best line
+            best_cp = max(l[3] for l in lines)
+            show = []
+            for mv, sc, rank, cp in lines:
+                pct = 100.0 * math.exp(-(best_cp - cp) / 80.0)
+                pct = max(0.0, min(100.0, pct))
+                show.append({"uci": mv, "score": sc, "rank": rank, "pct": pct})
+            # low-elo: randomized pick with weights (starred)
             prof = profile_for(int(self.cfg.get("elo", 1700)))
-            picks = lines[:]
-            if prof["weights"] and len(picks) > 1:
-                ws = prof["weights"][:len(picks)]
+            if prof["weights"] and len(show) > 1:
+                ws = prof["weights"][:len(show)]
                 s = sum(ws)
                 r = random.random() * s
                 acc = 0
-                chosen = picks[0]
-                for i, w in enumerate(ws):
-                    acc += w
+                chosen = show[0]
+                for i, wv in enumerate(ws):
+                    acc += wv
                     if r <= acc:
-                        chosen = picks[i]
+                        chosen = show[i]
                         break
-                # reorder so the displayed ranks stay by quality, mark chosen first
-                picks = sorted(picks, key=lambda t: (t is not chosen, t[2]))
-                picks = [((t[0], t[1] + (" ★" if t is chosen else ""), t[2])) for t in picks]
-            show = picks[:3 if self.cfg.get("show_top3", True) else 1]
+                chosen["star"] = True
+            if not self.cfg.get("show_top3", True):
+                show = show[:1]
             # human delay — keeps reaction time statistically human
             if self.cfg.get("human_delay_on", True):
                 dmin = int(self.cfg.get("human_delay_min_ms", 300)) / 1000.0
@@ -1142,12 +1167,16 @@ class Worker(threading.Thread):
                 "fen": self.board.fen(),
             })
             self.log(f"ходы: " + "  ".join(
-                f"{'⌗' + str(m[2])} {m[0]} ({m[1]})" for m in show) +
+                f"{'★' if m.get('star') else '⌗' + str(m['rank'])} "
+                f"{m['uci'][:2]}→{m['uci'][2:4]} {m['score']} {m['pct']:.0f}%"
+                for m in show) +
                 f"  [движок {engine_ms}мс, показ +{int(delay*1000)}мс]")
             self.awaiting_our_move = True
             self.status("ход показан — сходи и жди ответа")
         else:
             # we moved — clear overlay, keep waiting for opponent
+            self.board.push(candidate)
+            self.prev_state = st
             self.ui.put(("clear", None))
             self.status("твой ход принят, жду противника...")
 
@@ -1542,6 +1571,15 @@ class ControlPanel:
 
 # ----------------------------------------------------------------------------
 def main():
+    # DPI awareness: tk coordinates must match physical screen pixels (mss),
+    # otherwise calibration clicks and overlay positions are shifted by scale
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_DPI_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
     if not os.path.exists(engine_path()):
         print("stockfish.exe not found in engines/ — see README")
         return
